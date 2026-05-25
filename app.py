@@ -1,7 +1,6 @@
 from flask import Flask, request, render_template_string, send_file
 import yt_dlp
 import os
-import time
 
 app = Flask(__name__)
 
@@ -144,7 +143,10 @@ def home():
         video_id = get_video_id(text)
 
         if not video_id:
-            ydl_opts = {"quiet": True}
+            ydl_opts = {
+                "quiet": True,
+                "noplaylist": True,
+            }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 result = ydl.extract_info(f"ytsearch5:{text}", download=False)
@@ -173,7 +175,6 @@ def download():
     ydl_opts = {
         # 🔥 ffmpeg不要で最大互換
         "format": "best[ext=mp4]/best",
-
         "outtmpl": "/tmp/%(id)s.%(ext)s",
         "quiet": True,
         "no_warnings": True,
@@ -181,25 +182,25 @@ def download():
         # 🔥 bot回避（重要）
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web"]
+                "player_client": ["android"]
             }
         },
 
-        # 🔥 ブラウザ偽装
+        # 🔥 モバイル偽装
         "http_headers": {
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "Mozilla/5.0 (Linux; Android 12; Pixel 5) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0 Safari/537.36"
+                "Chrome/120.0 Mobile Safari/537.36"
             ),
+            "Referer": "https://m.youtube.com/",
             "Accept-Language": "ja,en-US;q=0.9",
-            "Referer": "https://www.youtube.com/",
         },
 
-        # 🔥 成功率上げるための遅延＆再試行
-        "retries": 5,
-        "fragment_retries": 5,
-        "sleep_interval": 1,
+        # 🔥 安定化設定
+        "sleep_interval": 2,
+        "retries": 3,
+        "fragment_retries": 3,
         "concurrent_fragment_downloads": 1,
     }
 
@@ -208,13 +209,14 @@ def download():
             info = ydl.extract_info(url, download=True)
             file_path = ydl.prepare_filename(info)
 
-        # 少し待ってファイル安定化
-        time.sleep(1)
+        # ファイルチェック
+        if not os.path.exists(file_path):
+            return "DL失敗（YouTube側ブロックの可能性）"
 
         return send_file(file_path, as_attachment=True)
 
     except Exception as e:
-        return f"エラー: {str(e)}"
+        return f"DLエラー: {str(e)}"
 
 
 if __name__ == "__main__":
