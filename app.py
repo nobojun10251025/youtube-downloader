@@ -128,7 +128,7 @@ def get_video_id(text):
     if "youtube.com/watch?v=" in text:
         return text.split("v=")[1].split("&")[0]
     if "youtu.be/" in text:
-        return text.split("youtu.be/")[1]
+        return text.split("youtu.be/")[1].split("?")[0]
     return None
 
 
@@ -144,6 +144,7 @@ def home():
 
         if not video_id:
             ydl_opts = {"quiet": True}
+
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 result = ydl.extract_info(f"ytsearch5:{text}", download=False)
 
@@ -169,38 +170,16 @@ def download():
     url = request.args.get("url")
 
     ydl_opts = {
-        "format": "bv*+ba/best",
-        "merge_output_format": "mp4",
+        "format": "best[ext=mp4]/best",  # ffmpeg不要の軽量版
         "outtmpl": "/tmp/%(id)s.%(ext)s",
-
-        # 軽量化
         "quiet": True,
         "no_warnings": True,
-
-        # Render対策リトライ
-        "retries": 10,
-        "fragment_retries": 10,
-
-        # 回避系（重要）
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"]
-            }
-        },
-
-        # 最低限ヘッダー
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Linux; Android 12)",
-            "Accept-Language": "ja,en-US;q=0.9",
-        },
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-
             file_path = ydl.prepare_filename(info)
-            file_path = os.path.splitext(file_path)[0] + ".mp4"
 
         return send_file(file_path, as_attachment=True)
 
