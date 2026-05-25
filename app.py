@@ -1,6 +1,7 @@
 from flask import Flask, request, render_template_string, send_file
 import yt_dlp
 import os
+import time
 
 app = Flask(__name__)
 
@@ -170,16 +171,45 @@ def download():
     url = request.args.get("url")
 
     ydl_opts = {
-        "format": "best[ext=mp4]/best",  # ffmpeg不要の軽量版
+        # 🔥 ffmpeg不要で最大互換
+        "format": "best[ext=mp4]/best",
+
         "outtmpl": "/tmp/%(id)s.%(ext)s",
         "quiet": True,
         "no_warnings": True,
+
+        # 🔥 bot回避（重要）
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web"]
+            }
+        },
+
+        # 🔥 ブラウザ偽装
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0 Safari/537.36"
+            ),
+            "Accept-Language": "ja,en-US;q=0.9",
+            "Referer": "https://www.youtube.com/",
+        },
+
+        # 🔥 成功率上げるための遅延＆再試行
+        "retries": 5,
+        "fragment_retries": 5,
+        "sleep_interval": 1,
+        "concurrent_fragment_downloads": 1,
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             file_path = ydl.prepare_filename(info)
+
+        # 少し待ってファイル安定化
+        time.sleep(1)
 
         return send_file(file_path, as_attachment=True)
 
