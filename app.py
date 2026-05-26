@@ -134,7 +134,7 @@ HTML = """
     </a>
 
     <p class="note">
-        まず「形式チェック」で mp4 / webm / m4a が出るか確認してください。
+        まず「形式チェック」で mp4 / m4a が出るか確認してください。
     </p>
 
 </div>
@@ -150,7 +150,6 @@ def handle_exception(e):
     error_text = traceback.format_exc()
     return f"""
     <h2>アプリ内部エラー</h2>
-    <p>Render Logsを見る前に、まずこの内容を確認してください。</p>
     <pre>{html.escape(error_text)}</pre>
     """, 500
 
@@ -199,11 +198,11 @@ def prepare_cookie():
 def get_ffmpeg_path():
     try:
         return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as e:
+    except Exception:
         return None
 
 
-def run_command(cmd, timeout=120):
+def run_command(cmd, timeout=180):
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -220,17 +219,22 @@ def base_ytdlp_cmd(cookie_path):
         sys.executable,
         "-m",
         "yt_dlp",
+
         "--cookies",
         cookie_path,
+
         "--no-playlist",
         "--no-warnings",
+
         "--force-ipv4",
+
         "--user-agent",
         (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
+
         "--referer",
         "https://www.youtube.com/",
     ]
@@ -351,6 +355,7 @@ def formats_check():
         return cookie_error
 
     clients = [
+        "android_vr",
         "web",
         "ios",
         "android",
@@ -362,13 +367,14 @@ def formats_check():
     for client in clients:
         cmd = base_ytdlp_cmd(cookie_path)
         cmd = add_client_args(cmd, client)
+
         cmd = cmd + [
             "-F",
             url
         ]
 
         try:
-            code, stdout, stderr = run_command(cmd, timeout=90)
+            code, stdout, stderr = run_command(cmd, timeout=120)
 
             output = stdout + "\n" + stderr
 
@@ -384,8 +390,8 @@ RETURN CODE: {code}
 
             if (
                 " mp4 " in output
-                or " webm " in output
                 or " m4a " in output
+                or " webm " in output
                 or "audio only" in output
                 or "video only" in output
             ):
@@ -444,15 +450,25 @@ def download():
     output_path = os.path.join(temp_dir, "%(id)s.%(ext)s")
 
     clients = [
+        "android_vr",
         "web",
         "ios",
         "android",
         "default"
     ]
 
+    # PC側で見えていたformatを優先
+    # 137+140 = 1080p mp4 + m4a
+    # 136+140 = 720p mp4 + m4a
+    # 135+140 = 480p mp4 + m4a
+    # 134+140 = 360p mp4 + m4a
+    # 18 = 360p 音声付きmp4
     format_patterns = [
-        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
-        "best",
+        "137+140/136+140/135+140/134+140/18",
+        "136+140/135+140/134+140/18",
+        "134+140/18",
+        "18",
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best"
     ]
 
     errors = []
@@ -465,19 +481,21 @@ def download():
             cmd = cmd + [
                 "--ffmpeg-location",
                 ffmpeg_path,
+
                 "-f",
                 fmt,
+
                 "--merge-output-format",
                 "mp4",
-                "--recode-video",
-                "mp4",
+
                 "-o",
                 output_path,
+
                 url
             ]
 
             try:
-                code, stdout, stderr = run_command(cmd, timeout=180)
+                code, stdout, stderr = run_command(cmd, timeout=240)
 
                 if code == 0:
                     mp4_file = find_mp4_file(temp_dir)
@@ -533,7 +551,7 @@ STDERR:
     return f"""
     <h2>DL失敗</h2>
     <p>すべてのclient / formatで失敗しました。</p>
-    <p>まず形式チェックで、mp4 / webm / m4a が出ているか確認してください。</p>
+    <p>形式チェックで android_vr に mp4 / m4a が出ているか確認してください。</p>
     <pre>{html.escape(error_output)}</pre>
     """
 
