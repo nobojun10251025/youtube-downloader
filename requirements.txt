@@ -2,3 +2,4 @@ flask
 gunicorn
 imageio-ffmpeg
 yt-dlp[default]
+yt-dlp-ejs
