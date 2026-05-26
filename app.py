@@ -12,6 +12,7 @@ HTML = """
 <head>
     <title>YouTube Downloader</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
+
     <style>
         body {
             font-family: Arial;
@@ -21,6 +22,7 @@ HTML = """
             margin: 0;
             padding: 20px;
         }
+
         input {
             width: 85%;
             padding: 12px;
@@ -28,6 +30,7 @@ HTML = """
             border: none;
             margin-top: 20px;
         }
+
         button {
             padding: 12px 18px;
             border-radius: 10px;
@@ -37,12 +40,14 @@ HTML = """
             margin-top: 15px;
             cursor: pointer;
         }
+
         .box {
             background: #1f1f1f;
             padding: 15px;
             margin-top: 20px;
             border-radius: 12px;
         }
+
         iframe {
             width: 100%;
             max-width: 600px;
@@ -51,14 +56,22 @@ HTML = """
         }
     </style>
 </head>
+
 <body>
 
 <h1>YouTube Downloader</h1>
 
 <form method="POST">
-    <input type="text" name="input" placeholder="YouTube URLを貼ってください">
+    <input
+        type="text"
+        name="input"
+        placeholder="YouTube URLを貼ってください">
+
     <br>
-    <button type="submit">表示</button>
+
+    <button type="submit">
+        表示
+    </button>
 </form>
 
 {% if error %}
@@ -69,6 +82,7 @@ HTML = """
 
 {% if video_id %}
 <div class="box">
+
     <h2>動画</h2>
 
     <iframe
@@ -79,8 +93,11 @@ HTML = """
     <br>
 
     <a href="/download?url=https://www.youtube.com/watch?v={{ video_id }}">
-        <button>ダウンロード</button>
+        <button>
+            ダウンロード
+        </button>
     </a>
+
 </div>
 {% endif %}
 
@@ -90,6 +107,7 @@ HTML = """
 
 
 def get_video_id(text):
+
     if not text:
         return None
 
@@ -107,15 +125,18 @@ def get_video_id(text):
 
 @app.route("/", methods=["GET", "POST"])
 def home():
+
     video_id = None
     error = None
 
     if request.method == "POST":
+
         text = request.form.get("input", "").strip()
+
         video_id = get_video_id(text)
 
         if not video_id:
-            error = "YouTubeのURLを入力してください"
+            error = "YouTube URLを入力してください"
 
     return render_template_string(
         HTML,
@@ -126,25 +147,31 @@ def home():
 
 @app.route("/download")
 def download():
+
     url = request.args.get("url")
 
     if not url:
         return "URLがありません"
 
+    # Render Secret File
     secret_cookie = "/etc/secrets/cookies.txt"
+
+    # 書き込み可能領域
     cookie_path = "/tmp/cookies.txt"
 
     if not os.path.exists(secret_cookie):
-        return "cookies.txtがRenderに設定されていません"
+        return "cookies.txt がRenderにありません"
 
     try:
         shutil.copy(secret_cookie, cookie_path)
+
     except Exception as e:
         return f"cookieコピー失敗: {str(e)}"
 
     ydl_opts = {
-        # 形式を固定しない。取れる形式を優先
-        "format": "best",
+
+        # まず成功率優先
+        "format": "18/best",
 
         "outtmpl": "/tmp/%(id)s.%(ext)s",
 
@@ -154,46 +181,49 @@ def download():
 
         "cookiefile": cookie_path,
 
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web"]
-            }
-        },
-
         "http_headers": {
+
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+
+            "Accept-Language":
+                "ja,en-US;q=0.9,en;q=0.8",
         },
 
-        "retries": 5,
-        "fragment_retries": 5,
+        "retries": 10,
+        "fragment_retries": 10,
+
         "concurrent_fragment_downloads": 1,
     }
 
     try:
+
         before_files = set(glob.glob("/tmp/*"))
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+
+            info = ydl.extract_info(
+                url,
+                download=True
+            )
 
         video_id = info.get("id")
 
-        files = glob.glob(f"/tmp/{video_id}.*")
+        after_files = set(glob.glob("/tmp/*"))
 
-        if files:
-            file_path = files[0]
-        else:
-            after_files = set(glob.glob("/tmp/*"))
-            new_files = list(after_files - before_files)
+        new_files = list(after_files - before_files)
 
-            if not new_files:
-                return "DL失敗：ファイル生成なし"
+        if not new_files:
+            return "DL失敗：ファイルが生成されませんでした"
 
-            file_path = new_files[0]
+        # 一番新しいファイル
+        file_path = max(
+            new_files,
+            key=os.path.getctime
+        )
 
         if not os.path.exists(file_path):
             return "DL失敗：ファイル未発見"
@@ -205,10 +235,12 @@ def download():
         )
 
     except Exception as e:
+
         return f"DLエラー: {str(e)}"
 
 
 if __name__ == "__main__":
+
     port = int(os.environ.get("PORT", 5000))
 
     app.run(
