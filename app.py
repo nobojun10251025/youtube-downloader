@@ -10,7 +10,7 @@ HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>YouTube MP4 Downloader</title>
+    <title>YouTube Downloader</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
@@ -21,7 +21,6 @@ HTML = """
             margin: 0;
             padding: 20px;
         }
-
         input {
             width: 85%;
             padding: 12px;
@@ -29,7 +28,6 @@ HTML = """
             border: none;
             margin-top: 20px;
         }
-
         button {
             padding: 12px 18px;
             border-radius: 10px;
@@ -39,14 +37,12 @@ HTML = """
             margin-top: 15px;
             cursor: pointer;
         }
-
         .box {
             background: #1f1f1f;
             padding: 15px;
             margin-top: 20px;
             border-radius: 12px;
         }
-
         iframe {
             width: 100%;
             max-width: 600px;
@@ -57,7 +53,7 @@ HTML = """
 </head>
 <body>
 
-<h1>YouTube MP4 Downloader</h1>
+<h1>YouTube Downloader</h1>
 
 <form method="POST">
     <input type="text" name="input" placeholder="YouTube URLを貼ってください">
@@ -83,7 +79,7 @@ HTML = """
     <br>
 
     <a href="/download?url=https://www.youtube.com/watch?v={{ video_id }}">
-        <button>MP4ダウンロード</button>
+        <button>ダウンロード</button>
     </a>
 </div>
 {% endif %}
@@ -116,7 +112,6 @@ def home():
 
     if request.method == "POST":
         text = request.form.get("input", "").strip()
-
         video_id = get_video_id(text)
 
         if not video_id:
@@ -136,10 +131,7 @@ def download():
     if not url:
         return "URLがありません"
 
-    # Render Secret File
     secret_cookie = "/etc/secrets/cookies.txt"
-
-    # 書き込み可能領域へコピー
     cookie_path = "/tmp/cookies.txt"
 
     if not os.path.exists(secret_cookie):
@@ -151,12 +143,8 @@ def download():
         return f"cookieコピー失敗: {str(e)}"
 
     ydl_opts = {
-        "format": (
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-            "best[ext=mp4]/best"
-        ),
-
-        "merge_output_format": "mp4",
+        # 形式を固定しない。取れる形式を優先
+        "format": "best",
 
         "outtmpl": "/tmp/%(id)s.%(ext)s",
 
@@ -178,9 +166,7 @@ def download():
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-
-            "Accept-Language":
-                "ja,en-US;q=0.9,en;q=0.8",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
         },
 
         "retries": 5,
@@ -198,16 +184,10 @@ def download():
 
         files = glob.glob(f"/tmp/{video_id}.*")
 
-        mp4_files = [
-            f for f in files if f.endswith(".mp4")
-        ]
-
-        if mp4_files:
-            file_path = mp4_files[0]
-
+        if files:
+            file_path = files[0]
         else:
             after_files = set(glob.glob("/tmp/*"))
-
             new_files = list(after_files - before_files)
 
             if not new_files:
@@ -221,7 +201,7 @@ def download():
         return send_file(
             file_path,
             as_attachment=True,
-            download_name=f"{video_id}.mp4"
+            download_name=os.path.basename(file_path)
         )
 
     except Exception as e:
