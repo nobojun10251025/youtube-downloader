@@ -71,6 +71,8 @@ HTML = """
             padding: 10px;
             border-radius: 10px;
             color: #ddd;
+            max-height: 600px;
+            overflow-y: auto;
         }
     </style>
 </head>
@@ -191,6 +193,21 @@ def find_mp4_file(folder):
     return max(found, key=os.path.getctime)
 
 
+def find_any_video_file(folder):
+    video_exts = [".mp4", ".webm", ".mkv", ".mov", ".m4v"]
+    found = []
+
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if any(file.endswith(ext) for ext in video_exts):
+                found.append(os.path.join(root, file))
+
+    if not found:
+        return None
+
+    return max(found, key=os.path.getctime)
+
+
 def run_command(cmd, timeout=300):
     result = subprocess.run(
         cmd,
@@ -201,6 +218,42 @@ def run_command(cmd, timeout=300):
     )
 
     return result.returncode, result.stdout, result.stderr
+
+
+def base_ytdlp_cmd(cookie_path):
+    return [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+
+        "--cookies",
+        cookie_path,
+
+        "--no-playlist",
+        "--no-warnings",
+
+        "--force-ipv4",
+
+        "--user-agent",
+        (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+
+        "--referer",
+        "https://www.youtube.com/",
+    ]
+
+
+def add_client_args(cmd, client_name):
+    if client_name == "default":
+        return cmd
+
+    return cmd + [
+        "--extractor-args",
+        f"youtube:player_client={client_name}"
+    ]
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -282,34 +335,78 @@ def formats_check():
     if cookie_error:
         return cookie_error
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "yt_dlp",
-        "--cookies",
-        cookie_path,
-        "--no-playlist",
-        "--no-warnings",
-        "-F",
-        url
+    clients = [
+        "default",
+        "web",
+        "ios",
+        "android",
+        "android_vr",
+        "web_embedded",
     ]
 
-    try:
-        code, stdout, stderr = run_command(cmd, timeout=120)
+    outputs = []
 
-        output = stdout + "\n" + stderr
+    for client in clients:
+        cmd = base_ytdlp_cmd(cookie_path)
+        cmd = add_client_args(cmd, client)
+        cmd = cmd + [
+            "-F",
+            url
+        ]
 
-        if not output.strip():
-            output = "出力が空です"
+        try:
+            code, stdout, stderr = run_command(cmd, timeout=120)
 
-        return f"""
-        <h2>Formats Check</h2>
-        <p>return code: {code}</p>
-        <pre>{output}</pre>
-        """
+            output = stdout + "\n" + stderr
 
-    except Exception as e:
-        return f"formats確認エラー: {str(e)}"
+            outputs.append(
+                f"""
+==============================
+CLIENT: {client}
+RETURN CODE: {code}
+==============================
+{output}
+"""
+            )
+
+            # sbだけではなく、mp4 / webm / m4a などが出たら一旦そこで止める
+            if (
+                code == 0
+                and (
+                    " mp4 " in output
+                    or " webm " in output
+                    or " m4a " in output
+                    or "audio only" in output
+                    or "video only" in output
+                )
+            ):
+                break
+
+        except subprocess.TimeoutExpired:
+            outputs.append(
+                f"""
+==============================
+CLIENT: {client}
+TIMEOUT
+==============================
+"""
+            )
+
+        except Exception as e:
+            outputs.append(
+                f"""
+==============================
+CLIENT: {client}
+ERROR
+==============================
+{str(e)}
+"""
+            )
+
+    return f"""
+    <h2>Formats Check</h2>
+    <pre>{''.join(outputs)}</pre>
+    """
 
 
 @app.route("/download")
@@ -332,79 +429,100 @@ def download():
     temp_dir = tempfile.mkdtemp(prefix="yt_")
     output_path = os.path.join(temp_dir, "%(id)s.%(ext)s")
 
-    # 成功率優先で複数パターン試す
+    clients = [
+        "web",
+        "ios",
+        "android",
+        "android_vr",
+        "web_embedded",
+        "default",
+    ]
+
     format_patterns = [
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/best",
+        "bestvideo+bestaudio/best",
         "best*",
         "best",
-        "bv*+ba/best",
-        "18/best"
+        "18/best",
     ]
 
     errors = []
 
-    for fmt in format_patterns:
-        cmd = [
-            sys.executable,
-            "-m",
-            "yt_dlp",
+    for client in clients:
+        for fmt in format_patterns:
+            cmd = base_ytdlp_cmd(cookie_path)
+            cmd = add_client_args(cmd, client)
 
-            "--cookies",
-            cookie_path,
+            cmd = cmd + [
+                "--ffmpeg-location",
+                ffmpeg_path,
 
-            "--no-playlist",
-            "--no-warnings",
+                "-f",
+                fmt,
 
-            "--ffmpeg-location",
-            ffmpeg_path,
+                "--merge-output-format",
+                "mp4",
 
-            "-f",
-            fmt,
+                "--recode-video",
+                "mp4",
 
-            "--merge-output-format",
-            "mp4",
+                "-o",
+                output_path,
 
-            "--recode-video",
-            "mp4",
+                url
+            ]
 
-            "-o",
-            output_path,
+            try:
+                code, stdout, stderr = run_command(cmd, timeout=300)
 
-            url
-        ]
+                if code == 0:
+                    mp4_file = find_mp4_file(temp_dir)
 
-        try:
-            code, stdout, stderr = run_command(cmd, timeout=300)
+                    if mp4_file and os.path.exists(mp4_file):
+                        video_id = get_video_id(url) or "video"
 
-            if code == 0:
-                mp4_file = find_mp4_file(temp_dir)
+                        return send_file(
+                            mp4_file,
+                            as_attachment=True,
+                            download_name=f"{video_id}.mp4"
+                        )
 
-                if mp4_file and os.path.exists(mp4_file):
-                    video_id = get_video_id(url) or "video"
+                    any_file = find_any_video_file(temp_dir)
 
-                    return send_file(
-                        mp4_file,
-                        as_attachment=True,
-                        download_name=f"{video_id}.mp4"
+                    if any_file:
+                        errors.append(
+                            f"client={client}, format={fmt}: コマンド成功したがmp4ではない: {os.path.basename(any_file)}"
+                        )
+                    else:
+                        errors.append(
+                            f"client={client}, format={fmt}: コマンド成功したがファイルなし\n{stdout}\n{stderr}"
+                        )
+
+                else:
+                    errors.append(
+                        f"""
+client={client}
+format={fmt}
+return code={code}
+{stdout}
+{stderr}
+"""
                     )
 
+            except subprocess.TimeoutExpired:
                 errors.append(
-                    f"format={fmt}: コマンド成功したがmp4ファイルなし\n{stdout}\n{stderr}"
+                    f"client={client}, format={fmt}: タイムアウト"
                 )
 
-            else:
+            except Exception as e:
                 errors.append(
-                    f"format={fmt}: 失敗\n{stdout}\n{stderr}"
+                    f"client={client}, format={fmt}: 例外 {str(e)}"
                 )
-
-        except subprocess.TimeoutExpired:
-            errors.append(f"format={fmt}: タイムアウト")
-        except Exception as e:
-            errors.append(f"format={fmt}: 例外 {str(e)}")
 
     return f"""
     <h2>DL失敗</h2>
-    <p>すべてのformatパターンで失敗しました。</p>
-    <p>この動画はRender環境から形式一覧を取得できていない可能性が高いです。</p>
+    <p>すべてのclient / formatパターンで失敗しました。</p>
+    <p>Formats Checkでsb0〜sb3だけの場合、その動画本体がRender環境から見えていない可能性が高いです。</p>
     <hr>
     <pre>{chr(10).join(errors)}</pre>
     """
