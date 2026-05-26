@@ -1,6 +1,7 @@
 from flask import Flask, request, render_template_string, send_file
 import yt_dlp
 import os
+import glob
 
 app = Flask(__name__)
 
@@ -8,7 +9,7 @@ HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>YouTube軽量アプリ</title>
+    <title>YouTube MP4 Downloader</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         body {
@@ -17,107 +18,64 @@ HTML = """
             color: white;
             text-align: center;
             margin: 0;
+            padding: 20px;
         }
-
-        h1 { padding: 10px; }
-
         input {
-            width: 80%;
-            padding: 10px;
+            width: 85%;
+            padding: 12px;
             border-radius: 10px;
             border: none;
+            margin-top: 20px;
         }
-
         button {
-            padding: 10px 15px;
+            padding: 12px 18px;
             border-radius: 10px;
             border: none;
             background: red;
             color: white;
-            margin-top: 10px;
+            margin-top: 15px;
+            cursor: pointer;
         }
-
-        .video {
+        .box {
             background: #1f1f1f;
-            margin: 10px;
-            padding: 10px;
-            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 12px;
         }
-
-        img {
-            width: 100%;
-            border-radius: 10px;
-        }
-
         iframe {
             width: 100%;
-            height: 240px;
+            max-width: 600px;
+            height: 320px;
+            border: none;
         }
     </style>
 </head>
 <body>
 
-<h1>YouTube軽量アプリ</h1>
+<h1>YouTube MP4 Downloader</h1>
 
 <form method="POST">
-    <input type="text" name="input" placeholder="URL or 検索ワード">
+    <input type="text" name="input" placeholder="YouTube URLを貼ってください">
     <br>
-    <button type="submit">検索</button>
+    <button type="submit">表示</button>
 </form>
 
-{% if video_id %}
-    <h2>再生中</h2>
-    <iframe src="https://www.youtube.com/embed/{{ video_id }}" allowfullscreen></iframe>
+{% if error %}
+<div class="box">
+    <p>{{ error }}</p>
+</div>
+{% endif %}
 
+{% if video_id %}
+<div class="box">
+    <h2>動画</h2>
+    <iframe src="https://www.youtube.com/embed/{{ video_id }}" allowfullscreen></iframe>
     <br>
     <a href="/download?url=https://www.youtube.com/watch?v={{ video_id }}">
         <button>MP4ダウンロード</button>
     </a>
+</div>
 {% endif %}
-
-{% if videos %}
-    <h2>検索結果</h2>
-    {% for v in videos %}
-        <div class="video">
-            <p>{{ v.title }}</p>
-            <img src="{{ v.thumbnail }}">
-
-            <br><br>
-
-            <a href="/watch?v={{ v.id }}">
-                <button>再生</button>
-            </a>
-
-            <a href="/download?url=https://www.youtube.com/watch?v={{ v.id }}">
-                <button>DL</button>
-            </a>
-        </div>
-    {% endfor %}
-{% endif %}
-
-</body>
-</html>
-"""
-
-PLAYER_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<style>
-body { background: black; color: white; text-align: center; }
-iframe { width: 100%; height: 250px; }
-button { padding: 10px; margin-top: 20px; }
-</style>
-</head>
-<body>
-
-<h2>動画再生</h2>
-
-<iframe src="https://www.youtube.com/embed/{{ video_id }}" allowfullscreen></iframe>
-
-<br>
-<a href="/"><button>戻る</button></a>
 
 </body>
 </html>
@@ -125,95 +83,107 @@ button { padding: 10px; margin-top: 20px; }
 
 
 def get_video_id(text):
+    if not text:
+        return None
+
     if "youtube.com/watch?v=" in text:
         return text.split("v=")[1].split("&")[0]
+
     if "youtu.be/" in text:
         return text.split("youtu.be/")[1].split("?")[0]
+
+    if "youtube.com/shorts/" in text:
+        return text.split("shorts/")[1].split("?")[0]
+
     return None
 
 
 @app.route("/", methods=["GET", "POST"])
 def home():
-    videos = None
     video_id = None
+    error = None
 
     if request.method == "POST":
-        text = request.form["input"]
-
+        text = request.form.get("input", "").strip()
         video_id = get_video_id(text)
 
         if not video_id:
-            ydl_opts = {
-                "quiet": True,
-                "noplaylist": True,
-            }
+            error = "YouTubeのURLを入力してください"
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                result = ydl.extract_info(f"ytsearch5:{text}", download=False)
-
-                videos = []
-                for e in result["entries"]:
-                    videos.append({
-                        "title": e.get("title"),
-                        "thumbnail": e.get("thumbnail"),
-                        "id": e.get("id")
-                    })
-
-    return render_template_string(HTML, videos=videos, video_id=video_id)
-
-
-@app.route("/watch")
-def watch():
-    vid = request.args.get("v")
-    return render_template_string(PLAYER_HTML, video_id=vid)
+    return render_template_string(HTML, video_id=video_id, error=error)
 
 
 @app.route("/download")
 def download():
     url = request.args.get("url")
 
+    if not url:
+        return "URLがありません"
+
+    cookie_path = "/etc/secrets/cookies.txt"
+
+    if not os.path.exists(cookie_path):
+        return "cookies.txtがRenderに設定されていません。Secret Filesを確認してください。"
+
     ydl_opts = {
-        # 🔥 ffmpeg不要で最大互換
-        "format": "best[ext=mp4]/best",
+        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "merge_output_format": "mp4",
         "outtmpl": "/tmp/%(id)s.%(ext)s",
         "quiet": True,
         "no_warnings": True,
+        "noplaylist": True,
+        "cookiefile": cookie_path,
 
-        # 🔥 bot回避（重要）
         "extractor_args": {
             "youtube": {
-                "player_client": ["android"]
+                "player_client": ["android", "web"]
             }
         },
 
-        # 🔥 モバイル偽装
         "http_headers": {
             "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 12; Pixel 5) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0 Mobile Safari/537.36"
+                "Chrome/120.0.0.0 Safari/537.36"
             ),
-            "Referer": "https://m.youtube.com/",
-            "Accept-Language": "ja,en-US;q=0.9",
+            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
         },
 
-        # 🔥 安定化設定
-        "sleep_interval": 2,
-        "retries": 3,
-        "fragment_retries": 3,
+        "retries": 5,
+        "fragment_retries": 5,
         "concurrent_fragment_downloads": 1,
     }
 
     try:
+        before_files = set(glob.glob("/tmp/*"))
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
 
-        # ファイルチェック
+        video_id = info.get("id")
+        files = glob.glob(f"/tmp/{video_id}.*")
+
+        mp4_files = [f for f in files if f.endswith(".mp4")]
+
+        if mp4_files:
+            file_path = mp4_files[0]
+        else:
+            after_files = set(glob.glob("/tmp/*"))
+            new_files = list(after_files - before_files)
+
+            if not new_files:
+                return "DL失敗：ファイルが作成されませんでした"
+
+            file_path = new_files[0]
+
         if not os.path.exists(file_path):
-            return "DL失敗（YouTube側ブロックの可能性）"
+            return "DL失敗：ファイルが見つかりません"
 
-        return send_file(file_path, as_attachment=True)
+        return send_file(
+            file_path,
+            as_attachment=True,
+            download_name=f"{video_id}.mp4"
+        )
 
     except Exception as e:
         return f"DLエラー: {str(e)}"
