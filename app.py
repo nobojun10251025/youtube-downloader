@@ -1,9 +1,10 @@
 from flask import Flask, request, render_template_string, send_file
 import yt_dlp
 import os
-import glob
 import shutil
+import tempfile
 import imageio_ffmpeg
+from urllib.parse import urlparse, parse_qs
 
 app = Flask(__name__)
 
@@ -120,14 +121,24 @@ def get_video_id(text):
     if not text:
         return None
 
-    if "youtube.com/watch?v=" in text:
-        return text.split("v=")[1].split("&")[0]
+    text = text.strip()
 
-    if "youtu.be/" in text:
-        return text.split("youtu.be/")[1].split("?")[0]
+    try:
+        parsed = urlparse(text)
 
-    if "youtube.com/shorts/" in text:
-        return text.split("shorts/")[1].split("?")[0]
+        if "youtube.com" in parsed.netloc:
+            if parsed.path == "/watch":
+                query = parse_qs(parsed.query)
+                return query.get("v", [None])[0]
+
+            if parsed.path.startswith("/shorts/"):
+                return parsed.path.split("/shorts/")[1].split("/")[0]
+
+        if "youtu.be" in parsed.netloc:
+            return parsed.path.strip("/").split("/")[0]
+
+    except Exception:
+        return None
 
     return None
 
@@ -145,6 +156,36 @@ def prepare_cookie():
         return None, f"cookieコピー失敗: {str(e)}"
 
     return cookie_path, None
+
+
+def find_mp4_file(folder):
+    mp4_files = []
+
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if file.endswith(".mp4"):
+                mp4_files.append(os.path.join(root, file))
+
+    if not mp4_files:
+        return None
+
+    return max(mp4_files, key=os.path.getctime)
+
+
+def find_any_video_file(folder):
+    video_exts = [".mp4", ".webm", ".mkv", ".mov"]
+
+    found = []
+
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if any(file.endswith(ext) for ext in video_exts):
+                found.append(os.path.join(root, file))
+
+    if not found:
+        return None
+
+    return max(found, key=os.path.getctime)
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -214,6 +255,72 @@ def ffmpeg_check():
         return f"ffmpeg NG: {str(e)}"
 
 
+@app.route("/formats-check")
+def formats_check():
+    url = request.args.get("url")
+
+    if not url:
+        return "URLがありません。例: /formats-check?url=YouTubeのURL"
+
+    cookie_path, cookie_error = prepare_cookie()
+
+    if cookie_error:
+        return cookie_error
+
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "cookiefile": cookie_path,
+    }
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        formats = info.get("formats", [])
+
+        if not formats:
+            return "formats が0件です。cookieが効いていない、動画が制限されている、またはYouTube側にブロックされています。"
+
+        rows = []
+
+        for f in formats:
+            rows.append(
+                f"""
+                <tr>
+                    <td>{f.get("format_id")}</td>
+                    <td>{f.get("ext")}</td>
+                    <td>{f.get("resolution")}</td>
+                    <td>{f.get("vcodec")}</td>
+                    <td>{f.get("acodec")}</td>
+                    <td>{f.get("protocol")}</td>
+                </tr>
+                """
+            )
+
+        return f"""
+        <h2>Formats Check</h2>
+        <p>title: {info.get("title")}</p>
+        <p>formats: {len(formats)} 件</p>
+
+        <table border="1" cellpadding="5">
+            <tr>
+                <th>format_id</th>
+                <th>ext</th>
+                <th>resolution</th>
+                <th>vcodec</th>
+                <th>acodec</th>
+                <th>protocol</th>
+            </tr>
+            {''.join(rows)}
+        </table>
+        """
+
+    except Exception as e:
+        return f"formats確認エラー: {str(e)}"
+
+
 @app.route("/download")
 def download():
     url = request.args.get("url")
@@ -231,19 +338,12 @@ def download():
     except Exception as e:
         return f"ffmpeg取得エラー: {str(e)}"
 
-    output_template = "/tmp/%(id)s.%(ext)s"
+    temp_dir = tempfile.mkdtemp(prefix="yt_")
 
     ydl_opts = {
-        # まずmp4動画+m4a音声を優先。
-        # なければ取れる形式を落として、ffmpegでmp4へ変換する。
-        "format": (
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/"
-            "bestvideo+bestaudio/"
-            "18/"
-            "best"
-        ),
-
-        "outtmpl": output_template,
+        # あえて format を指定しない。
+        # yt-dlp側に最適な形式選択を任せる。
+        "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
 
         "quiet": True,
         "no_warnings": True,
@@ -253,10 +353,10 @@ def download():
 
         "ffmpeg_location": ffmpeg_path,
 
-        # 結合時の出力コンテナをmp4へ
+        # 結合時はmp4コンテナを優先
         "merge_output_format": "mp4",
 
-        # 最終ファイルをmp4へ変換
+        # 最終的にmp4へ変換
         "postprocessors": [
             {
                 "key": "FFmpegVideoConvertor",
@@ -279,50 +379,28 @@ def download():
     }
 
     try:
-        before_files = set(glob.glob("/tmp/*"))
-
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(
                 url,
                 download=True
             )
 
-        video_id = info.get("id")
+        video_id = info.get("id", "video")
 
-        # mp4優先で探す
-        mp4_files = glob.glob(f"/tmp/{video_id}.mp4")
+        mp4_file = find_mp4_file(temp_dir)
 
-        if mp4_files:
-            file_path = max(
-                mp4_files,
-                key=os.path.getctime
-            )
+        if mp4_file:
+            file_path = mp4_file
         else:
-            after_files = set(glob.glob("/tmp/*"))
-            new_files = list(after_files - before_files)
+            any_file = find_any_video_file(temp_dir)
 
-            if not new_files:
-                possible_files = glob.glob(f"/tmp/{video_id}.*")
+            if any_file:
+                return f"MP4変換失敗：生成ファイルは {os.path.basename(any_file)} でした"
 
-                if possible_files:
-                    file_path = max(
-                        possible_files,
-                        key=os.path.getctime
-                    )
-                else:
-                    return "DL失敗：ファイルが生成されませんでした"
-            else:
-                file_path = max(
-                    new_files,
-                    key=os.path.getctime
-                )
+            return "DL失敗：ファイルが生成されませんでした"
 
         if not os.path.exists(file_path):
             return "DL失敗：ファイル未発見"
-
-        # 念のため、mp4以外ならエラー表示
-        if not file_path.endswith(".mp4"):
-            return f"MP4変換失敗：生成ファイルは {os.path.basename(file_path)} でした"
 
         return send_file(
             file_path,
@@ -332,12 +410,3 @@ def download():
 
     except Exception as e:
         return f"DLエラー: {str(e)}"
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-
-    app.run(
-        host="0.0.0.0",
-        port=port
-    )
