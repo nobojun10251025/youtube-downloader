@@ -68,7 +68,7 @@ HTML = """
             padding: 10px;
             border-radius: 10px;
             color: #ddd;
-            max-height: 600px;
+            max-height: 650px;
             overflow-y: auto;
         }
 
@@ -133,8 +133,16 @@ HTML = """
         </button>
     </a>
 
+    <br>
+
+    <a href="/runtime-check">
+        <button>
+            Runtime確認
+        </button>
+    </a>
+
     <p class="note">
-        まず「形式チェック」で mp4 / m4a が出るか確認してください。
+        まず Runtime確認 → 形式チェック → MP4ダウンロード の順で試してください。
     </p>
 
 </div>
@@ -202,6 +210,21 @@ def get_ffmpeg_path():
         return None
 
 
+def get_deno_path():
+    candidates = [
+        os.path.expanduser("~/.deno/bin/deno"),
+        "/opt/render/.deno/bin/deno",
+        "/opt/render/project/.deno/bin/deno",
+        "/opt/render/project/src/.deno/bin/deno",
+    ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    return "deno"
+
+
 def run_command(cmd, timeout=180):
     result = subprocess.run(
         cmd,
@@ -215,6 +238,8 @@ def run_command(cmd, timeout=180):
 
 
 def base_ytdlp_cmd(cookie_path):
+    deno_path = get_deno_path()
+
     return [
         sys.executable,
         "-m",
@@ -224,9 +249,14 @@ def base_ytdlp_cmd(cookie_path):
         cookie_path,
 
         "--no-playlist",
-        "--no-warnings",
 
         "--force-ipv4",
+
+        "--js-runtimes",
+        f"deno:{deno_path}",
+
+        "--remote-components",
+        "ejs:npm",
 
         "--user-agent",
         (
@@ -299,6 +329,68 @@ def home():
 @app.route("/health")
 def health():
     return "OK"
+
+
+@app.route("/runtime-check")
+def runtime_check():
+    outputs = []
+
+    commands = [
+        ["python version", [sys.executable, "--version"]],
+        ["yt-dlp version", [sys.executable, "-m", "yt_dlp", "--version"]],
+        ["deno version", [get_deno_path(), "--version"]],
+    ]
+
+    for title, cmd in commands:
+        try:
+            code, stdout, stderr = run_command(cmd, timeout=60)
+
+            outputs.append(
+                f"""
+==============================
+{title}
+return code: {code}
+==============================
+STDOUT:
+{stdout}
+
+STDERR:
+{stderr}
+"""
+            )
+
+        except Exception as e:
+            outputs.append(
+                f"""
+==============================
+{title}
+ERROR
+==============================
+{str(e)}
+"""
+            )
+
+    ffmpeg_path = get_ffmpeg_path()
+
+    outputs.append(
+        f"""
+==============================
+ffmpeg
+==============================
+{ffmpeg_path}
+exists: {os.path.exists(ffmpeg_path) if ffmpeg_path else False}
+
+==============================
+deno path used
+==============================
+{get_deno_path()}
+"""
+    )
+
+    return f"""
+    <h2>Runtime Check</h2>
+    <pre>{html.escape(''.join(outputs))}</pre>
+    """
 
 
 @app.route("/cookie-check")
@@ -374,7 +466,7 @@ def formats_check():
         ]
 
         try:
-            code, stdout, stderr = run_command(cmd, timeout=120)
+            code, stdout, stderr = run_command(cmd, timeout=180)
 
             output = stdout + "\n" + stderr
 
@@ -384,6 +476,10 @@ def formats_check():
 CLIENT: {client}
 RETURN CODE: {code}
 ==============================
+COMMAND:
+{' '.join(cmd)}
+
+OUTPUT:
 {output}
 """
             )
@@ -420,8 +516,8 @@ ERROR
 
     final_output = "".join(outputs)
 
-    if len(final_output) > 50000:
-        final_output = final_output[:50000] + "\n\n--- 出力が長すぎるため省略 ---"
+    if len(final_output) > 60000:
+        final_output = final_output[:60000] + "\n\n--- 出力が長すぎるため省略 ---"
 
     return f"""
     <h2>Formats Check</h2>
@@ -457,12 +553,6 @@ def download():
         "default"
     ]
 
-    # PC側で見えていたformatを優先
-    # 137+140 = 1080p mp4 + m4a
-    # 136+140 = 720p mp4 + m4a
-    # 135+140 = 480p mp4 + m4a
-    # 134+140 = 360p mp4 + m4a
-    # 18 = 360p 音声付きmp4
     format_patterns = [
         "137+140/136+140/135+140/134+140/18",
         "136+140/135+140/134+140/18",
@@ -495,7 +585,7 @@ def download():
             ]
 
             try:
-                code, stdout, stderr = run_command(cmd, timeout=240)
+                code, stdout, stderr = run_command(cmd, timeout=300)
 
                 if code == 0:
                     mp4_file = find_mp4_file(temp_dir)
@@ -545,13 +635,13 @@ STDERR:
 
     error_output = "\n".join(errors)
 
-    if len(error_output) > 50000:
-        error_output = error_output[:50000] + "\n\n--- エラー出力が長すぎるため省略 ---"
+    if len(error_output) > 60000:
+        error_output = error_output[:60000] + "\n\n--- エラー出力が長すぎるため省略 ---"
 
     return f"""
     <h2>DL失敗</h2>
     <p>すべてのclient / formatで失敗しました。</p>
-    <p>形式チェックで android_vr に mp4 / m4a が出ているか確認してください。</p>
+    <p>Runtime確認と形式チェックの結果を確認してください。</p>
     <pre>{html.escape(error_output)}</pre>
     """
 
