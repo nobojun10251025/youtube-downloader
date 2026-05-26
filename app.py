@@ -1,8 +1,9 @@
 from flask import Flask, request, render_template_string, send_file
-import yt_dlp
 import os
 import shutil
 import tempfile
+import subprocess
+import sys
 import imageio_ffmpeg
 from urllib.parse import urlparse, parse_qs
 
@@ -61,6 +62,16 @@ HTML = """
             font-size: 14px;
             color: #cccccc;
         }
+
+        pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+            text-align: left;
+            background: #111;
+            padding: 10px;
+            border-radius: 10px;
+            color: #ddd;
+        }
     </style>
 </head>
 
@@ -102,6 +113,14 @@ HTML = """
     <a href="/download?url=https://www.youtube.com/watch?v={{ video_id }}">
         <button>
             MP4ダウンロード
+        </button>
+    </a>
+
+    <br>
+
+    <a href="/formats-check?url=https://www.youtube.com/watch?v={{ video_id }}">
+        <button>
+            形式チェック
         </button>
     </a>
 
@@ -159,33 +178,29 @@ def prepare_cookie():
 
 
 def find_mp4_file(folder):
-    mp4_files = []
-
-    for root, dirs, files in os.walk(folder):
-        for file in files:
-            if file.endswith(".mp4"):
-                mp4_files.append(os.path.join(root, file))
-
-    if not mp4_files:
-        return None
-
-    return max(mp4_files, key=os.path.getctime)
-
-
-def find_any_video_file(folder):
-    video_exts = [".mp4", ".webm", ".mkv", ".mov"]
-
     found = []
 
     for root, dirs, files in os.walk(folder):
         for file in files:
-            if any(file.endswith(ext) for ext in video_exts):
+            if file.endswith(".mp4"):
                 found.append(os.path.join(root, file))
 
     if not found:
         return None
 
     return max(found, key=os.path.getctime)
+
+
+def run_command(cmd, timeout=300):
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=timeout
+    )
+
+    return result.returncode, result.stdout, result.stderr
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -234,7 +249,7 @@ def cookie_check():
         <p>google.com cookieあり: {has_google}</p>
         <p>ログイン系cookieらしきものあり: {has_sid}</p>
         <hr>
-        <p>youtube.com / google.com / ログイン系cookie が True ならかなりOKです。</p>
+        <p>youtube.com / google.com / ログイン系cookie が True ならOK寄りです。</p>
         """
 
     except Exception as e:
@@ -260,61 +275,37 @@ def formats_check():
     url = request.args.get("url")
 
     if not url:
-        return "URLがありません。例: /formats-check?url=YouTubeのURL"
+        return "URLがありません"
 
     cookie_path, cookie_error = prepare_cookie()
 
     if cookie_error:
         return cookie_error
 
-    ydl_opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "cookiefile": cookie_path,
-    }
+    cmd = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--cookies",
+        cookie_path,
+        "--no-playlist",
+        "--no-warnings",
+        "-F",
+        url
+    ]
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        code, stdout, stderr = run_command(cmd, timeout=120)
 
-        formats = info.get("formats", [])
+        output = stdout + "\n" + stderr
 
-        if not formats:
-            return "formats が0件です。cookieが効いていない、動画が制限されている、またはYouTube側にブロックされています。"
-
-        rows = []
-
-        for f in formats:
-            rows.append(
-                f"""
-                <tr>
-                    <td>{f.get("format_id")}</td>
-                    <td>{f.get("ext")}</td>
-                    <td>{f.get("resolution")}</td>
-                    <td>{f.get("vcodec")}</td>
-                    <td>{f.get("acodec")}</td>
-                    <td>{f.get("protocol")}</td>
-                </tr>
-                """
-            )
+        if not output.strip():
+            output = "出力が空です"
 
         return f"""
         <h2>Formats Check</h2>
-        <p>title: {info.get("title")}</p>
-        <p>formats: {len(formats)} 件</p>
-
-        <table border="1" cellpadding="5">
-            <tr>
-                <th>format_id</th>
-                <th>ext</th>
-                <th>resolution</th>
-                <th>vcodec</th>
-                <th>acodec</th>
-                <th>protocol</th>
-            </tr>
-            {''.join(rows)}
-        </table>
+        <p>return code: {code}</p>
+        <pre>{output}</pre>
         """
 
     except Exception as e:
@@ -339,74 +330,90 @@ def download():
         return f"ffmpeg取得エラー: {str(e)}"
 
     temp_dir = tempfile.mkdtemp(prefix="yt_")
+    output_path = os.path.join(temp_dir, "%(id)s.%(ext)s")
 
-    ydl_opts = {
-        # あえて format を指定しない。
-        # yt-dlp側に最適な形式選択を任せる。
-        "outtmpl": os.path.join(temp_dir, "%(id)s.%(ext)s"),
+    # 成功率優先で複数パターン試す
+    format_patterns = [
+        "best*",
+        "best",
+        "bv*+ba/best",
+        "18/best"
+    ]
 
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
+    errors = []
 
-        "cookiefile": cookie_path,
+    for fmt in format_patterns:
+        cmd = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
 
-        "ffmpeg_location": ffmpeg_path,
+            "--cookies",
+            cookie_path,
 
-        # 結合時はmp4コンテナを優先
-        "merge_output_format": "mp4",
+            "--no-playlist",
+            "--no-warnings",
 
-        # 最終的にmp4へ変換
-        "postprocessors": [
-            {
-                "key": "FFmpegVideoConvertor",
-                "preferedformat": "mp4"
-            }
-        ],
+            "--ffmpeg-location",
+            ffmpeg_path,
 
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-        },
+            "-f",
+            fmt,
 
-        "retries": 10,
-        "fragment_retries": 10,
-        "concurrent_fragment_downloads": 1,
-    }
+            "--merge-output-format",
+            "mp4",
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(
-                url,
-                download=True
-            )
+            "--recode-video",
+            "mp4",
 
-        video_id = info.get("id", "video")
+            "-o",
+            output_path,
 
-        mp4_file = find_mp4_file(temp_dir)
+            url
+        ]
 
-        if mp4_file:
-            file_path = mp4_file
-        else:
-            any_file = find_any_video_file(temp_dir)
+        try:
+            code, stdout, stderr = run_command(cmd, timeout=300)
 
-            if any_file:
-                return f"MP4変換失敗：生成ファイルは {os.path.basename(any_file)} でした"
+            if code == 0:
+                mp4_file = find_mp4_file(temp_dir)
 
-            return "DL失敗：ファイルが生成されませんでした"
+                if mp4_file and os.path.exists(mp4_file):
+                    video_id = get_video_id(url) or "video"
 
-        if not os.path.exists(file_path):
-            return "DL失敗：ファイル未発見"
+                    return send_file(
+                        mp4_file,
+                        as_attachment=True,
+                        download_name=f"{video_id}.mp4"
+                    )
 
-        return send_file(
-            file_path,
-            as_attachment=True,
-            download_name=f"{video_id}.mp4"
-        )
+                errors.append(
+                    f"format={fmt}: コマンド成功したがmp4ファイルなし\n{stdout}\n{stderr}"
+                )
 
-    except Exception as e:
-        return f"DLエラー: {str(e)}"
+            else:
+                errors.append(
+                    f"format={fmt}: 失敗\n{stdout}\n{stderr}"
+                )
+
+        except subprocess.TimeoutExpired:
+            errors.append(f"format={fmt}: タイムアウト")
+        except Exception as e:
+            errors.append(f"format={fmt}: 例外 {str(e)}")
+
+    return f"""
+    <h2>DL失敗</h2>
+    <p>すべてのformatパターンで失敗しました。</p>
+    <p>この動画はRender環境から形式一覧を取得できていない可能性が高いです。</p>
+    <hr>
+    <pre>{chr(10).join(errors)}</pre>
+    """
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+
+    app.run(
+        host="0.0.0.0",
+        port=port
+    )
