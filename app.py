@@ -142,7 +142,7 @@ HTML = """
     </a>
 
     <p class="note">
-        まず Runtime確認 → 形式チェック → MP4ダウンロード の順で試してください。
+        Deno有効化済み。基本はwebクライアントでMP4を取得します。
     </p>
 
 </div>
@@ -212,10 +212,10 @@ def get_ffmpeg_path():
 
 def get_deno_path():
     candidates = [
-        os.path.expanduser("~/.deno/bin/deno"),
-        "/opt/render/.deno/bin/deno",
-        "/opt/render/project/.deno/bin/deno",
         "/opt/render/project/src/.deno/bin/deno",
+        "/opt/render/project/.deno/bin/deno",
+        "/opt/render/.deno/bin/deno",
+        os.path.expanduser("~/.deno/bin/deno"),
     ]
 
     for path in candidates:
@@ -446,12 +446,12 @@ def formats_check():
     if cookie_error:
         return cookie_error
 
+    # android_vr は cookies 非対応と出るため、webを最優先
     clients = [
-        "android_vr",
         "web",
+        "default",
         "ios",
         "android",
-        "default"
     ]
 
     outputs = []
@@ -545,20 +545,20 @@ def download():
     temp_dir = tempfile.mkdtemp(prefix="yt_")
     output_path = os.path.join(temp_dir, "%(id)s.%(ext)s")
 
+    # 今回Renderで成功しているwebを最優先
     clients = [
-        "android_vr",
         "web",
+        "default",
         "ios",
         "android",
-        "default"
     ]
 
+    # まずformat 18を優先。
+    # 18は音声付きmp4なので、ffmpeg結合なしでも落ちやすい。
     format_patterns = [
-        "137+140/136+140/135+140/134+140/18",
-        "136+140/135+140/134+140/18",
-        "134+140/18",
         "18",
-        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best"
+        "18/best[ext=mp4]/best",
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
     ]
 
     errors = []
@@ -641,7 +641,7 @@ STDERR:
     return f"""
     <h2>DL失敗</h2>
     <p>すべてのclient / formatで失敗しました。</p>
-    <p>Runtime確認と形式チェックの結果を確認してください。</p>
+    <p>形式チェックでwebクライアントに18 mp4が出ているか確認してください。</p>
     <pre>{html.escape(error_output)}</pre>
     """
 
