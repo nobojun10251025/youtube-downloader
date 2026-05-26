@@ -4,6 +4,8 @@ import shutil
 import tempfile
 import subprocess
 import sys
+import traceback
+import html
 import imageio_ffmpeg
 from urllib.parse import urlparse, parse_qs
 
@@ -58,11 +60,6 @@ HTML = """
             border: none;
         }
 
-        .note {
-            font-size: 14px;
-            color: #cccccc;
-        }
-
         pre {
             white-space: pre-wrap;
             word-break: break-word;
@@ -73,6 +70,16 @@ HTML = """
             color: #ddd;
             max-height: 600px;
             overflow-y: auto;
+        }
+
+        a {
+            color: white;
+            text-decoration: none;
+        }
+
+        .note {
+            font-size: 14px;
+            color: #cccccc;
         }
     </style>
 </head>
@@ -127,7 +134,7 @@ HTML = """
     </a>
 
     <p class="note">
-        動画によっては変換に少し時間がかかります。
+        まず「形式チェック」で mp4 / webm / m4a が出るか確認してください。
     </p>
 
 </div>
@@ -136,6 +143,16 @@ HTML = """
 </body>
 </html>
 """
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    error_text = traceback.format_exc()
+    return f"""
+    <h2>アプリ内部エラー</h2>
+    <p>Render Logsを見る前に、まずこの内容を確認してください。</p>
+    <pre>{html.escape(error_text)}</pre>
+    """, 500
 
 
 def get_video_id(text):
@@ -179,36 +196,14 @@ def prepare_cookie():
     return cookie_path, None
 
 
-def find_mp4_file(folder):
-    found = []
-
-    for root, dirs, files in os.walk(folder):
-        for file in files:
-            if file.endswith(".mp4"):
-                found.append(os.path.join(root, file))
-
-    if not found:
+def get_ffmpeg_path():
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as e:
         return None
 
-    return max(found, key=os.path.getctime)
 
-
-def find_any_video_file(folder):
-    video_exts = [".mp4", ".webm", ".mkv", ".mov", ".m4v"]
-    found = []
-
-    for root, dirs, files in os.walk(folder):
-        for file in files:
-            if any(file.endswith(ext) for ext in video_exts):
-                found.append(os.path.join(root, file))
-
-    if not found:
-        return None
-
-    return max(found, key=os.path.getctime)
-
-
-def run_command(cmd, timeout=300):
+def run_command(cmd, timeout=120):
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
@@ -225,22 +220,17 @@ def base_ytdlp_cmd(cookie_path):
         sys.executable,
         "-m",
         "yt_dlp",
-
         "--cookies",
         cookie_path,
-
         "--no-playlist",
         "--no-warnings",
-
         "--force-ipv4",
-
         "--user-agent",
         (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
-
         "--referer",
         "https://www.youtube.com/",
     ]
@@ -254,6 +244,33 @@ def add_client_args(cmd, client_name):
         "--extractor-args",
         f"youtube:player_client={client_name}"
     ]
+
+
+def find_mp4_file(folder):
+    found = []
+
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            if file.endswith(".mp4"):
+                found.append(os.path.join(root, file))
+
+    if not found:
+        return None
+
+    return max(found, key=os.path.getctime)
+
+
+def find_any_file(folder):
+    found = []
+
+    for root, dirs, files in os.walk(folder):
+        for file in files:
+            found.append(os.path.join(root, file))
+
+    if not found:
+        return None
+
+    return max(found, key=os.path.getctime)
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -275,6 +292,11 @@ def home():
     )
 
 
+@app.route("/health")
+def health():
+    return "OK"
+
+
 @app.route("/cookie-check")
 def cookie_check():
     secret_cookie = "/etc/secrets/cookies.txt"
@@ -282,45 +304,38 @@ def cookie_check():
     if not os.path.exists(secret_cookie):
         return "NG: /etc/secrets/cookies.txt が存在しません"
 
-    try:
-        size = os.path.getsize(secret_cookie)
+    size = os.path.getsize(secret_cookie)
 
-        with open(secret_cookie, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
+    with open(secret_cookie, "r", encoding="utf-8", errors="ignore") as f:
+        text = f.read()
 
-        has_youtube = "youtube.com" in text
-        has_google = "google.com" in text
-        has_sid = "SID" in text or "__Secure" in text
-        starts_ok = "# Netscape HTTP Cookie File" in text[:200]
+    has_youtube = "youtube.com" in text
+    has_google = "google.com" in text
+    has_sid = "SID" in text or "__Secure" in text
+    starts_ok = "# Netscape HTTP Cookie File" in text[:200]
 
-        return f"""
-        <h2>Cookie Check</h2>
-        <p>file: OK</p>
-        <p>size: {size} bytes</p>
-        <p>Netscape形式: {starts_ok}</p>
-        <p>youtube.com cookieあり: {has_youtube}</p>
-        <p>google.com cookieあり: {has_google}</p>
-        <p>ログイン系cookieらしきものあり: {has_sid}</p>
-        <hr>
-        <p>youtube.com / google.com / ログイン系cookie が True ならOK寄りです。</p>
-        """
-
-    except Exception as e:
-        return f"NG: cookie確認中にエラー: {str(e)}"
+    return f"""
+    <h2>Cookie Check</h2>
+    <p>file: OK</p>
+    <p>size: {size} bytes</p>
+    <p>Netscape形式: {starts_ok}</p>
+    <p>youtube.com cookieあり: {has_youtube}</p>
+    <p>google.com cookieあり: {has_google}</p>
+    <p>ログイン系cookieらしきものあり: {has_sid}</p>
+    """
 
 
 @app.route("/ffmpeg-check")
 def ffmpeg_check():
-    try:
-        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+    ffmpeg_path = get_ffmpeg_path()
 
-        if os.path.exists(ffmpeg_path):
-            return f"ffmpeg OK: {ffmpeg_path}"
+    if not ffmpeg_path:
+        return "ffmpeg NG"
 
-        return "ffmpeg NG: パスは取得できましたが、ファイルが存在しません"
+    if os.path.exists(ffmpeg_path):
+        return f"ffmpeg OK: {ffmpeg_path}"
 
-    except Exception as e:
-        return f"ffmpeg NG: {str(e)}"
+    return "ffmpeg NG: ファイルが存在しません"
 
 
 @app.route("/formats-check")
@@ -336,12 +351,10 @@ def formats_check():
         return cookie_error
 
     clients = [
-        "default",
         "web",
         "ios",
         "android",
-        "android_vr",
-        "web_embedded",
+        "default"
     ]
 
     outputs = []
@@ -355,7 +368,7 @@ def formats_check():
         ]
 
         try:
-            code, stdout, stderr = run_command(cmd, timeout=120)
+            code, stdout, stderr = run_command(cmd, timeout=90)
 
             output = stdout + "\n" + stderr
 
@@ -369,16 +382,12 @@ RETURN CODE: {code}
 """
             )
 
-            # sbだけではなく、mp4 / webm / m4a などが出たら一旦そこで止める
             if (
-                code == 0
-                and (
-                    " mp4 " in output
-                    or " webm " in output
-                    or " m4a " in output
-                    or "audio only" in output
-                    or "video only" in output
-                )
+                " mp4 " in output
+                or " webm " in output
+                or " m4a " in output
+                or "audio only" in output
+                or "video only" in output
             ):
                 break
 
@@ -403,9 +412,14 @@ ERROR
 """
             )
 
+    final_output = "".join(outputs)
+
+    if len(final_output) > 50000:
+        final_output = final_output[:50000] + "\n\n--- 出力が長すぎるため省略 ---"
+
     return f"""
     <h2>Formats Check</h2>
-    <pre>{''.join(outputs)}</pre>
+    <pre>{html.escape(final_output)}</pre>
     """
 
 
@@ -421,10 +435,10 @@ def download():
     if cookie_error:
         return cookie_error
 
-    try:
-        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception as e:
-        return f"ffmpeg取得エラー: {str(e)}"
+    ffmpeg_path = get_ffmpeg_path()
+
+    if not ffmpeg_path:
+        return "ffmpegが取得できません"
 
     temp_dir = tempfile.mkdtemp(prefix="yt_")
     output_path = os.path.join(temp_dir, "%(id)s.%(ext)s")
@@ -433,17 +447,12 @@ def download():
         "web",
         "ios",
         "android",
-        "android_vr",
-        "web_embedded",
-        "default",
+        "default"
     ]
 
     format_patterns = [
-        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/best",
-        "bestvideo+bestaudio/best",
-        "best*",
+        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
         "best",
-        "18/best",
     ]
 
     errors = []
@@ -456,24 +465,19 @@ def download():
             cmd = cmd + [
                 "--ffmpeg-location",
                 ffmpeg_path,
-
                 "-f",
                 fmt,
-
                 "--merge-output-format",
                 "mp4",
-
                 "--recode-video",
                 "mp4",
-
                 "-o",
                 output_path,
-
                 url
             ]
 
             try:
-                code, stdout, stderr = run_command(cmd, timeout=300)
+                code, stdout, stderr = run_command(cmd, timeout=180)
 
                 if code == 0:
                     mp4_file = find_mp4_file(temp_dir)
@@ -487,15 +491,15 @@ def download():
                             download_name=f"{video_id}.mp4"
                         )
 
-                    any_file = find_any_video_file(temp_dir)
+                    any_file = find_any_file(temp_dir)
 
                     if any_file:
                         errors.append(
-                            f"client={client}, format={fmt}: コマンド成功したがmp4ではない: {os.path.basename(any_file)}"
+                            f"client={client}, format={fmt}: mp4なし。生成ファイル: {os.path.basename(any_file)}"
                         )
                     else:
                         errors.append(
-                            f"client={client}, format={fmt}: コマンド成功したがファイルなし\n{stdout}\n{stderr}"
+                            f"client={client}, format={fmt}: 成功扱いだがファイルなし"
                         )
 
                 else:
@@ -504,7 +508,9 @@ def download():
 client={client}
 format={fmt}
 return code={code}
+STDOUT:
 {stdout}
+STDERR:
 {stderr}
 """
                     )
@@ -519,12 +525,16 @@ return code={code}
                     f"client={client}, format={fmt}: 例外 {str(e)}"
                 )
 
+    error_output = "\n".join(errors)
+
+    if len(error_output) > 50000:
+        error_output = error_output[:50000] + "\n\n--- エラー出力が長すぎるため省略 ---"
+
     return f"""
     <h2>DL失敗</h2>
-    <p>すべてのclient / formatパターンで失敗しました。</p>
-    <p>Formats Checkでsb0〜sb3だけの場合、その動画本体がRender環境から見えていない可能性が高いです。</p>
-    <hr>
-    <pre>{chr(10).join(errors)}</pre>
+    <p>すべてのclient / formatで失敗しました。</p>
+    <p>まず形式チェックで、mp4 / webm / m4a が出ているか確認してください。</p>
+    <pre>{html.escape(error_output)}</pre>
     """
 
 
